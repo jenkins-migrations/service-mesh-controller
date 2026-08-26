@@ -1,0 +1,85 @@
+name: Android flavor build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GRADLE_OPTS: -Dorg.gradle.daemon=false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4, pinned to the current v4 release commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # actions/setup-java v5, pinned to the current v5 release commit.
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Select build flavor
+        shell: bash
+        run: |
+          branch_name="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          echo "Android SDK: ${ANDROID_HOME:-not set}"
+          echo "Branch: $branch_name"
+          if [[ "$branch_name" =~ ^QA_(.+)$ ]]; then
+            flavor="${BASH_REMATCH[1]}"
+          else
+            flavor=debug
+          fi
+          printf 'FLAVOR=%s\n' "$flavor" > flavor.properties
+          printf 'BUILD_FLAVOR=%s\n' "$flavor" >> "$GITHUB_ENV"
+          echo "Building flavor: $flavor"
+
+      - name: Build
+        shell: bash
+        run: |
+          ./gradlew clean
+          ./gradlew "assemble${BUILD_FLAVOR^}"
+
+      - name: Test
+        shell: bash
+        run: ./gradlew "test${BUILD_FLAVOR^}UnitTest"
+
+      # Replaces Jenkins publishTestResults; reports remain available per run.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-test-results
+          path: "**/TEST-*.xml"
+          if-no-files-found: warn
+
+      - name: Lint
+        shell: bash
+        run: ./gradlew "lint${BUILD_FLAVOR^}"
+
+      # Replaces Jenkins publishHTML.
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-lint-report
+          path: app/build/reports/lint-results-*/lint-results.html
+          if-no-files-found: warn
+
+      - name: Upload APKs
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-apks
+          path: app/build/outputs/apk/*/*.apk
+          if-no-files-found: error
+
+      - name: Deploy non-debug APK
+        if: success() && env.BUILD_FLAVOR != 'debug'
+        run: echo "Deploying ${BUILD_FLAVOR} APK to test distribution"

@@ -1,0 +1,138 @@
+name: Java matrix build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    name: ${{ matrix.platform }} / JDK ${{ matrix.java }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-latest
+            java: "8"
+          - platform: linux
+            runner: ubuntu-latest
+            java: "11"
+          - platform: linux
+            runner: ubuntu-latest
+            java: "17"
+          - platform: windows
+            runner: windows-latest
+            java: "8"
+          - platform: windows
+            runner: windows-latest
+            java: "11"
+          - platform: windows
+            runner: windows-latest
+            java: "17"
+          - platform: macos
+            runner: macos-latest
+            java: "11"
+          - platform: macos
+            runner: macos-latest
+            java: "17"
+    steps:
+      # actions/checkout v4, pinned to the current v4 release commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # actions/setup-java v5, pinned to the current v5 release commit.
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+
+      - name: Build on Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: mvn.cmd clean compile
+
+      - name: Build on Unix
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: mvn clean compile
+
+      - name: Test on Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: mvn.cmd test
+
+      - name: Test on Unix
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: mvn test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: test-results-${{ matrix.platform }}-jdk${{ matrix.java }}
+          path: "**/surefire-reports/*.xml"
+          if-no-files-found: warn
+
+      - name: Package on Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: mvn.cmd package -DskipTests
+
+      - name: Package on Unix
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: mvn package -DskipTests
+
+      - name: Upload package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package-${{ matrix.platform }}-jdk${{ matrix.java }}
+          path: target/*.jar
+          if-no-files-found: error
+
+  integration:
+    needs: build-test-package
+    runs-on: ubuntu-latest
+    steps:
+      # actions/download-artifact v5, pinned to the current v5 release commit.
+      - name: Collect matrix packages
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          pattern: package-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Run integration collection
+        shell: bash
+        run: |
+          echo "Running integration tests across all platforms"
+          echo "Collecting artifacts from all matrix builds"
+          find artifacts -name "*.jar" -type f
+
+  docker-build:
+    needs: integration
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4, pinned to the current v4 release commit.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Build Docker images
+        shell: bash
+        env:
+          REGISTRY: docker.example.com
+          IMAGE_NAME: myapp
+        run: |
+          for java_version in 11 17; do
+            docker build \
+              -t "${REGISTRY}/${IMAGE_NAME}:linux-jdk-${java_version}-${GITHUB_RUN_NUMBER}" \
+              --build-arg "JAVA_VERSION=jdk-${java_version}" \
+              --build-arg PLATFORM=linux \
+              .
+          done
